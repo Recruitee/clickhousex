@@ -17,14 +17,10 @@ defmodule Clickhousex.HTTPClient do
 
   defp send_p(query, request, base_address, database, opts) do
     command = parse_command(query)
+    url_size = calculate_url_size(base_address, database, request)
 
-    post_body = maybe_append_format(query, request)
-
-    http_opts =
-      Keyword.put(opts, :params, %{
-        database: database,
-        query: IO.iodata_to_binary(request.query_string_data)
-      })
+    post_body = build_post_body(query, request, url_size)
+    http_opts = build_http_opts(opts, database, request, url_size)
 
     with {:ok, %{status_code: 200, body: body}} <-
            HTTPoison.post(base_address, post_body, @req_headers, http_opts),
@@ -38,14 +34,49 @@ defmodule Clickhousex.HTTPClient do
     end
   end
 
+  defp calculate_url_size(base_address, database, request) do
+    query_string_data = IO.iodata_to_binary(request.query_string_data)
+
+    url =
+      base_address <>
+        "?" <> URI.encode_www_form("database=#{database}" <> "&query=#{query_string_data}")
+
+    byte_size(url)
+  end
+
   defp parse_command(%Query{type: :select}), do: :selected
   defp parse_command(_), do: :updated
 
+  defp build_post_body(_, request, url_size) when url_size >= 16384 do
+    request.query_string_data
+    |> IO.iodata_to_binary()
+    |> append_format()
+  end
+
+  defp build_post_body(query, request, _) do
+    maybe_append_format(query, request)
+  end
+
+  defp build_http_opts(opts, database, request, url_size) when url_size >= 16384 do
+    Keyword.put(opts, :params, %{database: database, query: ""})
+  end
+
+  defp build_http_opts(opts, database, request, _) do
+    Keyword.put(opts, :params, %{
+      database: database,
+      query: IO.iodata_to_binary(request.query_string_data)
+    })
+  end
+
   defp maybe_append_format(%Query{type: :select}, request) do
-    [request.post_data, " FORMAT ", @codec.response_format()]
+    append_format(request.post_data)
   end
 
   defp maybe_append_format(_, request) do
     [request.post_data]
+  end
+
+  defp append_format(data) do
+    [data, " FORMAT ", @codec.response_format()]
   end
 end
